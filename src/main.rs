@@ -49,7 +49,6 @@ async fn main() -> Result<(), Box<dyn Error>>{
 #[derive(Deserialize, Clone, Debug)]
 struct IncomingMessage {
     author: String,
-    password: Option<String>,
     target: String,
     text: String,
 }
