@@ -20,8 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
 
     query("CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        password TEXT
+        name TEXT NOT NULL
     )").execute(&mut connection).await?;
     
     query("CREATE TABLE IF NOT EXISTS messages (
@@ -68,7 +67,6 @@ struct Message {
 struct User {
     id: i32,
     name: String,
-    password: Option<String>
 }
 
 impl From<IncomingMessage> for Message {
@@ -86,52 +84,34 @@ impl From<IncomingMessage> for Message {
 #[derive(Serialize, Deserialize)] 
 struct MessagesRequest {
     target: String,
-    password: Option<String>
 }
 
-#[derive(Serialize, Deserialize)]
-enum GetUserError {
-    NotFound,
-    WrongPassword
-}
 
-async fn create_user(connection: &mut SqliteConnection, name: &String, password: &Option<String>) -> Result<(), sqlx::Error> {
+async fn create_user(connection: &mut SqliteConnection, name: &String) -> Result<(), sqlx::Error> {
     query("INSERT INTO users (name, password) VALUES (?, ?)")
         .bind(name)
-        .bind(password)
         .execute(connection)
         .await?;
 
     Ok(())
 }
 
-async fn get_user(connection: &mut SqliteConnection, name: &str, password: &Option<String>, require_password_match: bool) -> Result<User, GetUserError> {
-    let user: User = sqlx::query_as("SELECT * FROM users WHERE name = ?")
+async fn get_user(connection: &mut SqliteConnection, name: &str) -> Result<User, sqlx::Error> {
+    Ok(sqlx::query_as("SELECT * FROM users WHERE name = ?")
         .bind(name)
         .fetch_one(connection)
-        .await.map_err(|_| GetUserError::NotFound)?;
+        .await?)
     
-    if require_password_match {
-        if user.password == *password {
-            Ok(user)
-        } else {
-            Err(GetUserError::WrongPassword)
-        }
-    } else {
-        Ok(user)
-    }
 
 }
 
-async fn get_or_create_user(conn: &mut SqliteConnection, name: &String, password: &Option<String>) -> Result<User, GetUserError> {
-    match get_user(conn, name, password, true).await {
+async fn get_or_create_user(conn: &mut SqliteConnection, name: &String) -> Result<User, sqlx::Error> {
+    match get_user(conn, name).await {
         Ok(user) => Ok(user),
-        Err(GetUserError::NotFound) => 
-        {
-            create_user(conn, name, password).await.map_err(|_| GetUserError::WrongPassword)?;
-            Ok(get_user(conn, name, password, true).await.map_err(|_| (GetUserError::WrongPassword))?)
-        },
-        Err(GetUserError::WrongPassword) => Err(GetUserError::WrongPassword)
+        Err(_) => {
+            create_user(conn, name).await?;
+            Ok(get_user(conn, name).await?)
+        }
     }
 
 
@@ -144,7 +124,7 @@ async fn get_messages(Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<M
     let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
 
     // Get user id
-    let user = get_or_create_user(&mut conn, &payload.target, &payload.password).await.map_err(|_| (StatusCode::UNAUTHORIZED, "Failed to get user".to_string()))?;
+    let user = get_or_create_user(&mut conn, &payload.target).await.map_err(|_| (StatusCode::UNAUTHORIZED, "Failed to get user".to_string()))?;
     
 
     let messages = sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE target = ?")
@@ -160,8 +140,8 @@ async fn send_message(Json(payload): Json<IncomingMessage>) -> Result<StatusCode
     let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
 
     // Get user id
-    let author = get_user(&mut conn, &payload.author, &payload.password, true).await.map_err(|_| (StatusCode::NOT_FOUND, "User not found".to_string()))?;
-    let target = get_user(&mut conn, &payload.target, &None, false).await.map_err(|_| (StatusCode::NOT_FOUND, "Target not found".to_string()))?;
+    let author = get_or_create_user(&mut conn, &payload.author).await.map_err(|_| (StatusCode::NOT_FOUND, "User not found".to_string()))?;
+    let target = get_or_create_user(&mut conn, &payload.target).await.map_err(|_| (StatusCode::NOT_FOUND, "Target not found".to_string()))?;
 
     let message = Message::from(payload);
     let result = sqlx::query("INSERT INTO messages (author, target, text, create_at) VALUES (?, ?, ?, ?)")
