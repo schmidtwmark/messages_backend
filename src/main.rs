@@ -97,10 +97,10 @@ async fn create_user(connection: &mut SqliteConnection, name: &String) -> Result
 }
 
 async fn get_user(connection: &mut SqliteConnection, name: &str) -> Result<User, sqlx::Error> {
-    Ok(sqlx::query_as("SELECT * FROM users WHERE name = ?")
+    sqlx::query_as("SELECT * FROM users WHERE name = ?")
         .bind(name)
         .fetch_one(connection)
-        .await?)
+        .await
     
 
 }
