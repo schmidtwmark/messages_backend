@@ -1,14 +1,14 @@
 use axum::{
     http::StatusCode,
     routing::get,
-    Json, Router
+    Json, Router, Extension
 };
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::error::Error;
-use sqlx::{SqliteConnection, Connection, query};
+use sqlx::{SqliteConnection, query, SqlitePool};
 
 
 #[tokio::main]
@@ -16,12 +16,12 @@ async fn main() -> Result<(), Box<dyn Error>>{
     // init tracing
     tracing_subscriber::fmt::init();
 
-    let mut connection = SqliteConnection::connect("messages.db").await?;
+    let pool = sqlx::SqlitePool::connect("messages.db").await?;
 
     query("CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL
-    )").execute(&mut connection).await?;
+    )").execute(&pool).await?;
     
     query("CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,13 +29,15 @@ async fn main() -> Result<(), Box<dyn Error>>{
         target TEXT NOT NULL,
         text TEXT NOT NULL,
         timestamp DATETIME NOT NULL
-    )").execute(&mut connection).await?;
+    )").execute(&pool).await?;
 
 
     let app = Router::new()
         .route("/inbox", get(get_inbox))
         .route("/messages", get(get_messages))
-        .route("/send", get(send_message));
+        .route("/send", get(send_message))
+        .layer(Extension(pool));
+
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("Listening on {}", addr);
 
@@ -120,10 +122,10 @@ async fn get_or_create_user(conn: &mut SqliteConnection, name: &String) -> Resul
     }
 }
 
-async fn get_inbox(Json(payload): Json<InboxRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+async fn get_inbox(Extension(pool): Extension<SqlitePool>, Json(payload): Json<InboxRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
     tracing::info!("Got request for inbox for {}", payload.target);
 
-    let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
+    let mut conn = pool.acquire().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting connection: {}", e)))?;
 
     // Get user id
     let user = get_or_create_user(&mut conn, &payload.target).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User not found, error {e}")))?;
@@ -140,10 +142,10 @@ async fn get_inbox(Json(payload): Json<InboxRequest>) -> Result<Json<Vec<Message
 
 }
 
-async fn get_messages(Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+async fn get_messages(Extension(pool): Extension<SqlitePool>, Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
     tracing::info!("Got request for messages for {:?}", payload);
 
-    let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
+    let mut conn = pool.acquire().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting connection: {}", e)))?;
 
     // Get user id
     let me = get_or_create_user(&mut conn, &payload.me).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User {} not found, error {e}", payload.me)))?;
@@ -163,9 +165,9 @@ async fn get_messages(Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<M
     Ok(Json(messages))
 } 
 
-async fn send_message(Json(payload): Json<IncomingMessage>) -> Result<StatusCode, (StatusCode, String)> {
+async fn send_message(Extension(pool): Extension<SqlitePool>, Json(payload): Json<IncomingMessage>) -> Result<StatusCode, (StatusCode, String)> {
     tracing::info!("Sending message {:?}", payload);
-    let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
+    let mut conn = pool.acquire().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting connection: {}", e)))?;
 
     // Get user id
     let author = get_or_create_user(&mut conn, &payload.author).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User not found, error {e}")))?;
