@@ -28,11 +28,12 @@ async fn main() -> Result<(), Box<dyn Error>>{
         author TEXT NOT NULL,
         target TEXT NOT NULL,
         text TEXT NOT NULL,
-        create_at DATETIME NOT NULL
+        timestamp DATETIME NOT NULL
     )").execute(&mut connection).await?;
 
 
     let app = Router::new()
+        .route("/inbox", get(get_inbox))
         .route("/messages", get(get_messages))
         .route("/send", get(send_message));
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -81,18 +82,22 @@ impl From<IncomingMessage> for Message {
 }
 
 #[derive(Serialize, Deserialize)] 
-struct MessagesRequest {
+struct InboxRequest {
     target: String,
 }
 
+#[derive(Serialize, Deserialize, Debug)] 
+struct MessagesRequest {
+    me: String,
+    other: String
+}
 
-async fn create_user(connection: &mut SqliteConnection, name: &String) -> Result<(), sqlx::Error> {
-    query("INSERT INTO users (name, password) VALUES (?, ?)")
+
+async fn create_user(connection: &mut SqliteConnection, name: &String) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    query("INSERT INTO users (name) VALUES (?)")
         .bind(name)
         .execute(connection)
-        .await?;
-
-    Ok(())
+        .await
 }
 
 async fn get_user(connection: &mut SqliteConnection, name: &str) -> Result<User, sqlx::Error> {
@@ -108,27 +113,51 @@ async fn get_or_create_user(conn: &mut SqliteConnection, name: &String) -> Resul
     match get_user(conn, name).await {
         Ok(user) => Ok(user),
         Err(_) => {
-            create_user(conn, name).await?;
+            let result = create_user(conn, name).await?;
+            tracing::info!("Created user {} with result {:?}", name, result );
             Ok(get_user(conn, name).await?)
         }
     }
-
-
 }
 
-
-async fn get_messages(Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
-    tracing::info!("Got request for messages for {}", payload.target);
+async fn get_inbox(Json(payload): Json<InboxRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+    tracing::info!("Got request for inbox for {}", payload.target);
 
     let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
 
     // Get user id
-    let user = get_or_create_user(&mut conn, &payload.target).await.map_err(|_| (StatusCode::UNAUTHORIZED, "Failed to get user".to_string()))?;
+    let user = get_or_create_user(&mut conn, &payload.target).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User not found, error {e}")))?;
     
 
-    let messages = sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE target = ?")
-     .bind(user.id)
-     .fetch_all(&mut conn).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while fetching messages {e}")))?;
+    let messages = sqlx::query_as::<_, Message>("SELECT messages.text, messages.timestamp, author_name AS author, target_name as target, messages.id FROM messages INNER JOIN (SELECT name AS author_name, id AS author_id FROM users) ON messages.author = author_id INNER JOIN (SELECT name AS target_name, id AS target_id FROM users) ON messages.target = target_id WHERE target_id = ? ORDER BY timestamp")
+        .bind(user.id)
+        .fetch_all(&mut conn)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting messages: {}", e)))?;
+
+
+    Ok(Json(messages))
+
+}
+
+async fn get_messages(Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+    tracing::info!("Got request for messages for {:?}", payload);
+
+    let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
+
+    // Get user id
+    let me = get_or_create_user(&mut conn, &payload.me).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User {} not found, error {e}", payload.me)))?;
+    let other = get_or_create_user(&mut conn, &payload.other).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User {} not found, error {e}", payload.other)))?;
+    
+
+    let messages = sqlx::query_as::<_, Message>("SELECT messages.text, messages.timestamp, author_name AS author, target_name as target, messages.id FROM messages INNER JOIN (SELECT name AS author_name, id AS author_id FROM users) ON messages.author = author_id INNER JOIN (SELECT name AS target_name, id AS target_id FROM users) ON messages.target = target_id WHERE (author_id = ? or author_id = ?) AND (target_id = ? or target_id = ?) ORDER BY timestamp;")
+        .bind(me.id)
+        .bind(other.id)
+        .bind(me.id)
+        .bind(other.id)
+        .fetch_all(&mut conn)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting messages: {}", e)))?;
 
 
     Ok(Json(messages))
@@ -139,11 +168,11 @@ async fn send_message(Json(payload): Json<IncomingMessage>) -> Result<StatusCode
     let mut conn = SqliteConnection::connect("messages.db").await.unwrap();
 
     // Get user id
-    let author = get_or_create_user(&mut conn, &payload.author).await.map_err(|_| (StatusCode::NOT_FOUND, "User not found".to_string()))?;
-    let target = get_or_create_user(&mut conn, &payload.target).await.map_err(|_| (StatusCode::NOT_FOUND, "Target not found".to_string()))?;
+    let author = get_or_create_user(&mut conn, &payload.author).await.map_err(|e| (StatusCode::NOT_FOUND, format!("User not found, error {e}")))?;
+    let target = get_or_create_user(&mut conn, &payload.target).await.map_err(|e| (StatusCode::NOT_FOUND, format!("Target not found {e}")))?;
 
     let message = Message::from(payload);
-    let result = sqlx::query("INSERT INTO messages (author, target, text, create_at) VALUES (?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO messages (author, target, text, timestamp) VALUES (?, ?, ?, ?)")
         .bind(author.id)
         .bind(target.id)
         .bind(message.text)
