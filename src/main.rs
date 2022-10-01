@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
         .route("/send", get(send_message))
         .layer(Extension(pool));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("Listening on {}", addr);
 
     axum::Server::bind(&addr)
