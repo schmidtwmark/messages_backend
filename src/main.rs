@@ -1,6 +1,6 @@
 use axum::{
     http::StatusCode,
-    routing::get,
+    routing::get, routing::post,
     Json, Router, Extension
 };
 
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let app = Router::new()
         .route("/inbox", get(get_inbox))
         .route("/messages", get(get_messages))
-        .route("/send", get(send_message))
+        .route("/send", post(send_message))
         .layer(Extension(pool));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -63,6 +63,26 @@ struct Message {
     target: String,
     text: String,
     timestamp: DateTime<Utc>
+}
+#[derive(Serialize, Clone, Debug)]
+struct OutgoingMessage {
+    id: i32,
+    author: String,
+    target: String,
+    text: String,
+    timestamp: String
+}
+
+impl From<Message> for OutgoingMessage {
+    fn from(message: Message) -> Self {
+        OutgoingMessage {
+            id: message.id,
+            author: message.author,
+            text: message.text,
+            target: message.target,
+            timestamp: format!("{}", message.timestamp.format("%_d/%_m/%Y %_I:%M%p"))
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug, sqlx::FromRow)]
@@ -122,7 +142,7 @@ async fn get_or_create_user(conn: &mut SqliteConnection, name: &String) -> Resul
     }
 }
 
-async fn get_inbox(Extension(pool): Extension<SqlitePool>, Json(payload): Json<InboxRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+async fn get_inbox(Extension(pool): Extension<SqlitePool>, Json(payload): Json<InboxRequest>) -> Result<Json<Vec<OutgoingMessage>>, (StatusCode, String)>{  
     tracing::info!("Got request for inbox for {}", payload.target);
 
     let mut conn = pool.acquire().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting connection: {}", e)))?;
@@ -138,11 +158,11 @@ async fn get_inbox(Extension(pool): Extension<SqlitePool>, Json(payload): Json<I
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting messages: {}", e)))?;
 
 
-    Ok(Json(messages))
+    Ok(Json(messages.into_iter().map(From::from).collect()))
 
 }
 
-async fn get_messages(Extension(pool): Extension<SqlitePool>, Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<Message>>, (StatusCode, String)>{  
+async fn get_messages(Extension(pool): Extension<SqlitePool>, Json(payload): Json<MessagesRequest>) -> Result<Json<Vec<OutgoingMessage>>, (StatusCode, String)>{  
     tracing::info!("Got request for messages for {:?}", payload);
 
     let mut conn = pool.acquire().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting connection: {}", e)))?;
@@ -162,7 +182,7 @@ async fn get_messages(Extension(pool): Extension<SqlitePool>, Json(payload): Jso
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting messages: {}", e)))?;
 
 
-    Ok(Json(messages))
+    Ok(Json(messages.into_iter().map(From::from).collect()))
 } 
 
 async fn send_message(Extension(pool): Extension<SqlitePool>, Json(payload): Json<IncomingMessage>) -> Result<StatusCode, (StatusCode, String)> {
