@@ -75,12 +75,13 @@ struct OutgoingMessage {
 
 impl From<Message> for OutgoingMessage {
     fn from(message: Message) -> Self {
+        let chicago_time = message.timestamp.with_timezone(&chrono::FixedOffset::east(5*3600));
         OutgoingMessage {
             id: message.id,
             author: message.author,
             text: message.text,
             target: message.target,
-            timestamp: format!("{}", message.timestamp.format("%_m/%_d/%Y %_I:%M%p"))
+            timestamp: format!("{}", chicago_time.format("%_m/%_d/%Y %_I:%M%p"))
         }
     }
 }
