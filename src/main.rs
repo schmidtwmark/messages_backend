@@ -80,7 +80,7 @@ impl From<Message> for OutgoingMessage {
             author: message.author,
             text: message.text,
             target: message.target,
-            timestamp: format!("{}", message.timestamp.format("%_d/%_m/%Y %_I:%M%p"))
+            timestamp: format!("{}", message.timestamp.format("%_m/%_d/%Y %_I:%M%p"))
         }
     }
 }
