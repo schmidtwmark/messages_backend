@@ -1,6 +1,7 @@
 { pkgs }: {
 	deps = [
-		pkgs.sqlite.bin
+		pkgs.sudo
+  pkgs.sqlite.bin
   pkgs.rustc
 		pkgs.rustfmt
 		pkgs.cargo
