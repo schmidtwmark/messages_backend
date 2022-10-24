@@ -209,11 +209,11 @@ async fn get_messages(
             )
         })?;
 
-    let messages = sqlx::query_as::<_, Message>("SELECT messages.text, messages.timestamp, author_name AS author, target_name as target, messages.id FROM messages INNER JOIN (SELECT name AS author_name, id AS author_id FROM users) ON messages.author = author_id INNER JOIN (SELECT name AS target_name, id AS target_id FROM users) ON messages.target = target_id WHERE (author_id = ? or target_id = ?) AND (author_id = ? or target_id = ?) ORDER BY timestamp;")
+    let messages = sqlx::query_as::<_, Message>("SELECT messages.text, messages.timestamp, author_name AS author, target_name as target, messages.id FROM messages INNER JOIN (SELECT name AS author_name, id AS author_id FROM users) ON messages.author = author_id INNER JOIN (SELECT name AS target_name, id AS target_id FROM users) ON messages.target = target_id WHERE (author_id = ? AND target_id = ?) OR (author_id = ? AND target_id = ?) ORDER BY timestamp;")
         .bind(me.id)
         .bind(other.id)
-        .bind(me.id)
         .bind(other.id)
+        .bind(me.id)
         .fetch_all(&mut conn)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error getting messages: {}", e)))?;
@@ -222,9 +222,9 @@ async fn get_messages(
         messages
             .into_iter()
             .map(From::from)
-            // .filter(|message: &OutgoingMessage| {
-            //     me.id == other.id || message.author != message.target
-            // })
+            .filter(|message: &OutgoingMessage| {
+                me.id == other.id || message.author != message.target
+            })
             .collect(),
     ))
 }
